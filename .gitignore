@@ -1,0 +1,10 @@
+# Godot
+.godot/
+*.import
+
+# Local tools (optional Godot binary)
+tools/
+
+# OS
+Thumbs.db
+.DS_Store
