@@ -12,9 +12,14 @@ config_version=5
 
 config/name="LocalPoker"
 config/description="Texas Hold'em MVP — local heads-up, console debug"
-run/main_scene="res://scenes/table.tscn"
+run/main_scene="res://scenes/lobby.tscn"
 config/features=PackedStringArray("4.4", "Forward Plus")
 config/icon="res://icon.svg"
+
+[autoload]
+
+Net="*res://scripts/network_manager.gd"
+NetGame="*res://scripts/network_game_controller.gd"
 
 [debug]
 

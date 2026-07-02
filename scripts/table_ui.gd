@@ -1,26 +1,23 @@
 extends Control
-## Local (hot-seat vs bots) poker table UI. Player 0 is human, others are random bots.
+## Poker table UI. Renders personalized snapshots from NetGame and sends
+## action requests back — never touches GameState directly.
 
-const NUM_PLAYERS := 4
-const HUMAN_ID := 0
-const BOT_DELAY := 0.7
-const RUNOUT_DELAY := 0.9
 const CARD_SIZE := Vector2(52, 74)
-
 const SUIT_SYMBOLS: Dictionary = {
-	Card.Suit.HEARTS: "\u2665",
-	Card.Suit.DIAMONDS: "\u2666",
-	Card.Suit.CLUBS: "\u2663",
-	Card.Suit.SPADES: "\u2660",
+	"h": "\u2665",
+	"d": "\u2666",
+	"c": "\u2663",
+	"s": "\u2660",
 }
 
-var game: GameState
+var _snapshot: Dictionary = {}
+var _built_seats: int = -1
 
-var _seat_panels: Dictionary = {}
-var _seat_name_labels: Dictionary = {}
-var _seat_stack_labels: Dictionary = {}
-var _seat_bet_labels: Dictionary = {}
-var _seat_card_boxes: Dictionary = {}
+var _seat_panels: Array = []
+var _seat_name_labels: Array = []
+var _seat_stack_labels: Array = []
+var _seat_bet_labels: Array = []
+var _seat_card_boxes: Array = []
 
 var _community_box: HBoxContainer
 var _pot_label: Label
@@ -39,144 +36,142 @@ var _next_hand_btn: Button
 
 
 func _ready() -> void:
-	game = GameState.new(NUM_PLAYERS)
 	_build_ui()
 	resized.connect(_layout_seats)
-	call_deferred("_layout_seats")
-	_start_hand()
+	NetGame.state_updated.connect(_on_state)
+	if not NetGame.latest_snapshot.is_empty():
+		_on_state(NetGame.latest_snapshot)
 
 
-func _start_hand() -> void:
-	if not game.can_start_hand():
-		_status_label.text = "Game over — not enough players with chips."
-		_next_hand_btn.visible = false
-		return
-	game.start_hand()
-	_next_hand_btn.visible = false
-	_status_label.text = ""
+func _on_state(snapshot: Dictionary) -> void:
+	_snapshot = snapshot
+	_ensure_seats(snapshot.players.size())
 	_refresh()
-	_drive()
 
 
-func _drive() -> void:
-	while true:
-		if game.hand_over:
-			_show_showdown()
-			return
-		if game.is_runout_phase:
-			await get_tree().create_timer(RUNOUT_DELAY).timeout
-			game.advance_runout()
-			_refresh()
-			continue
-		if game.current_player == HUMAN_ID:
-			_show_actions()
-			return
-		await get_tree().create_timer(BOT_DELAY).timeout
-		_bot_act(game.current_player)
-		_refresh()
+# --- Actions ---
 
-
-func _bot_act(pid: int) -> void:
-	var legal: Array[String] = game.get_legal_actions(pid)
-	if legal.is_empty():
-		return
-	var action: String = legal[randi() % legal.size()]
-	var amount := 0
-	if action == "raise":
-		var min_raise: int = game.current_bet + maxi(game.last_raise_size, GameState.BIG_BLIND)
-		var max_raise: int = game.player_bets[pid] + game.player_stacks[pid]
-		amount = min_raise if max_raise <= min_raise else min_raise + randi() % (max_raise - min_raise + 1)
-	game.player_action(pid, action, amount)
-
-
-# --- Human actions ---
-
-func _show_actions() -> void:
-	var legal: Array[String] = game.get_legal_actions(HUMAN_ID)
-	_action_bar.visible = true
-	_fold_btn.visible = "fold" in legal
-	_check_btn.visible = "check" in legal
-	_call_btn.visible = "call" in legal
-	if "call" in legal:
-		var to_call: int = mini(game.current_bet - game.player_bets[HUMAN_ID], game.player_stacks[HUMAN_ID])
-		_call_btn.text = "Call %d" % to_call
-	var can_raise := "raise" in legal
-	_raise_btn.visible = can_raise
-	_raise_slider.visible = can_raise
-	_raise_amount_label.visible = can_raise
-	if can_raise:
-		_raise_slider.min_value = game.current_bet + maxi(game.last_raise_size, GameState.BIG_BLIND)
-		_raise_slider.max_value = game.player_bets[HUMAN_ID] + game.player_stacks[HUMAN_ID]
-		_raise_slider.value = _raise_slider.min_value
-		_raise_amount_label.text = str(int(_raise_slider.value))
-	_allin_btn.visible = "all_in" in legal
-
-
-func _human_act(action: String, amount: int = 0) -> void:
+func _send(action: String, amount: int = 0) -> void:
 	_action_bar.visible = false
-	var result: Dictionary = game.player_action(HUMAN_ID, action, amount)
-	if not result.ok:
-		_status_label.text = result.error
-		_show_actions()
-		return
-	_refresh()
-	_drive()
-
-
-func _on_fold() -> void:
-	_human_act("fold")
-
-
-func _on_check() -> void:
-	_human_act("check")
-
-
-func _on_call() -> void:
-	_human_act("call")
-
-
-func _on_raise() -> void:
-	_human_act("raise", int(_raise_slider.value))
-
-
-func _on_all_in() -> void:
-	_human_act("all_in")
+	NetGame.send_action(action, amount)
 
 
 func _on_next_hand() -> void:
-	_start_hand()
+	_next_hand_btn.visible = false
+	NetGame.request_next_hand()
 
 
 func _on_slider_changed(value: float) -> void:
 	_raise_amount_label.text = str(int(value))
 
 
-# --- Showdown ---
+# --- Rendering ---
 
-func _show_showdown() -> void:
-	_action_bar.visible = false
-	_refresh()
-	var results: Dictionary = game.showdown_results()
+func _refresh() -> void:
+	var snap := _snapshot
+	_phase_label.text = snap.phase
+	_pot_label.text = "Pot: %d" % snap.pot
+
+	_clear_children(_community_box)
+	for notation in snap.community:
+		_community_box.add_child(_make_card_node(notation))
+
+	var n: int = snap.players.size()
+	for entry in snap.players:
+		var idx: int = (int(entry.seat) - int(snap.your_seat) + n) % n
+		var tag := ""
+		if entry.seat == snap.your_seat:
+			tag += " (you)"
+		if entry.is_button:
+			tag += " (D)"
+		if entry.folded:
+			tag += " [fold]"
+		if not entry.connected:
+			tag += " [offline]"
+		_seat_name_labels[idx].text = entry.name + tag
+		_seat_stack_labels[idx].text = "Stack: %d" % entry.stack
+		_seat_bet_labels[idx].text = "Bet: %d" % entry.bet
+
+		var cards_box: HBoxContainer = _seat_card_boxes[idx]
+		_clear_children(cards_box)
+		for notation in entry.cards:
+			cards_box.add_child(_make_card_node(notation))
+
+		var panel: PanelContainer = _seat_panels[idx]
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(0.16, 0.16, 0.2)
+		style.set_corner_radius_all(8)
+		style.set_border_width_all(3)
+		if entry.seat == snap.current_seat:
+			style.border_color = Color(1.0, 0.85, 0.2)
+		else:
+			style.border_color = Color(0.3, 0.3, 0.35)
+		panel.add_theme_stylebox_override("panel", style)
+		var dimmed: bool = entry.folded or not entry.connected
+		panel.modulate = Color(1, 1, 1, 0.45) if dimmed else Color.WHITE
+
+	_refresh_action_bar(snap)
+	_refresh_status(snap)
+	call_deferred("_layout_seats")
+
+
+func _refresh_action_bar(snap: Dictionary) -> void:
+	var legal: Array = snap.legal_actions
+	_action_bar.visible = not legal.is_empty()
+	if legal.is_empty():
+		return
+	_fold_btn.visible = "fold" in legal
+	_check_btn.visible = "check" in legal
+	_call_btn.visible = "call" in legal
+	if "call" in legal:
+		_call_btn.text = "Call %d" % snap.to_call
+	var can_raise: bool = "raise" in legal
+	_raise_btn.visible = can_raise
+	_raise_slider.visible = can_raise
+	_raise_amount_label.visible = can_raise
+	if can_raise:
+		_raise_slider.min_value = snap.min_raise
+		_raise_slider.max_value = snap.max_raise
+		_raise_slider.value = snap.min_raise
+		_raise_amount_label.text = str(snap.min_raise)
+	_allin_btn.visible = "all_in" in legal
+
+
+func _refresh_status(snap: Dictionary) -> void:
 	var lines: PackedStringArray = []
-	if results.reason == "fold":
-		lines.append("%s wins %d — everyone folded." % [_player_name(results.winner), results.payouts[results.winner]])
-	else:
-		var pot_index := 0
-		for pot_entry in results.pots:
-			pot_index += 1
-			var kind := "Main pot" if pot_index == 1 else "Side pot %d" % (pot_index - 1)
-			var winner_names: PackedStringArray = []
-			for pid in pot_entry.winners:
-				winner_names.append(_player_name(pid))
-			lines.append("%s (%d): %s" % [kind, pot_entry.amount, ", ".join(winner_names)])
-		for pid in results.payouts:
-			lines.append("%s collects %d" % [_player_name(pid), results.payouts[pid]])
-	for pid in results.refunds:
-		lines.append("%s refunded %d (uncalled)" % [_player_name(pid), results.refunds[pid]])
+	if snap.message != "":
+		lines.append(snap.message)
+
+	if snap.hand_over and not snap.results.is_empty():
+		var names: Dictionary = {}
+		for entry in snap.players:
+			names[int(entry.seat)] = entry.name
+		var results: Dictionary = snap.results
+		if results.reason == "fold":
+			lines.append("%s wins %d — everyone folded." % [
+				names.get(int(results.winner), "?"), results.payouts.values()[0],
+			])
+		else:
+			var pot_index := 0
+			for pot_entry in results.pots:
+				pot_index += 1
+				var kind: String = "Main pot" if pot_index == 1 else "Side pot %d" % (pot_index - 1)
+				var winner_names: PackedStringArray = []
+				for seat in pot_entry.winners:
+					winner_names.append(names.get(int(seat), "?"))
+				lines.append("%s (%d): %s" % [kind, pot_entry.amount, ", ".join(winner_names)])
+			for seat in results.payouts:
+				lines.append("%s collects %d" % [names.get(int(seat), "?"), results.payouts[seat]])
+		for seat in results.refunds:
+			lines.append("%s refunded %d (uncalled)" % [names.get(int(seat), "?"), results.refunds[seat]])
+
+	if snap.game_over:
+		lines.append("Game over.")
+	elif snap.hand_over and not snap.can_next_hand:
+		lines.append("Waiting for host to start the next hand...")
+
 	_status_label.text = "\n".join(lines)
-	_next_hand_btn.visible = game.can_start_hand()
-	if not game.can_start_hand():
-		_status_label.text += "\nGame over."
+	_next_hand_btn.visible = snap.can_next_hand
 
 
 # --- UI construction ---
@@ -188,7 +183,6 @@ func _build_ui() -> void:
 	add_child(background)
 
 	var table := Panel.new()
-	table.name = "TableFelt"
 	table.set_anchors_preset(Control.PRESET_FULL_RECT)
 	table.offset_left = 140.0
 	table.offset_right = -140.0
@@ -221,9 +215,6 @@ func _build_ui() -> void:
 	_pot_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center_box.add_child(_pot_label)
 
-	for pid in range(NUM_PLAYERS):
-		_build_seat(pid)
-
 	_status_label = Label.new()
 	_status_label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	_status_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
@@ -234,10 +225,26 @@ func _build_ui() -> void:
 	_build_action_bar()
 
 
-func _build_seat(pid: int) -> void:
+func _ensure_seats(count: int) -> void:
+	if _built_seats == count:
+		return
+	_built_seats = count
+	for panel in _seat_panels:
+		panel.queue_free()
+	_seat_panels.clear()
+	_seat_name_labels.clear()
+	_seat_stack_labels.clear()
+	_seat_bet_labels.clear()
+	_seat_card_boxes.clear()
+	for _i in range(count):
+		_build_seat()
+	_layout_seats()
+
+
+func _build_seat() -> void:
 	var panel := PanelContainer.new()
 	add_child(panel)
-	_seat_panels[pid] = panel
+	_seat_panels.append(panel)
 
 	var box := VBoxContainer.new()
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -246,22 +253,22 @@ func _build_seat(pid: int) -> void:
 	var name_label := Label.new()
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(name_label)
-	_seat_name_labels[pid] = name_label
+	_seat_name_labels.append(name_label)
 
 	var cards_box := HBoxContainer.new()
 	cards_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_child(cards_box)
-	_seat_card_boxes[pid] = cards_box
+	_seat_card_boxes.append(cards_box)
 
 	var stack_label := Label.new()
 	stack_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(stack_label)
-	_seat_stack_labels[pid] = stack_label
+	_seat_stack_labels.append(stack_label)
 
 	var bet_label := Label.new()
 	bet_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(bet_label)
-	_seat_bet_labels[pid] = bet_label
+	_seat_bet_labels.append(bet_label)
 
 
 func _build_action_bar() -> void:
@@ -274,9 +281,9 @@ func _build_action_bar() -> void:
 	_action_bar.visible = false
 	add_child(_action_bar)
 
-	_fold_btn = _make_button("Fold", _on_fold)
-	_check_btn = _make_button("Check", _on_check)
-	_call_btn = _make_button("Call", _on_call)
+	_fold_btn = _make_button("Fold", func() -> void: _send("fold"))
+	_check_btn = _make_button("Check", func() -> void: _send("check"))
+	_call_btn = _make_button("Call", func() -> void: _send("call"))
 
 	_raise_slider = HSlider.new()
 	_raise_slider.custom_minimum_size = Vector2(160, 24)
@@ -287,8 +294,8 @@ func _build_action_bar() -> void:
 	_raise_amount_label = Label.new()
 	_action_bar.add_child(_raise_amount_label)
 
-	_raise_btn = _make_button("Raise", _on_raise)
-	_allin_btn = _make_button("All-In", _on_all_in)
+	_raise_btn = _make_button("Raise", func() -> void: _send("raise", int(_raise_slider.value)))
+	_allin_btn = _make_button("All-In", func() -> void: _send("all_in"))
 
 	_next_hand_btn = Button.new()
 	_next_hand_btn.text = "Next Hand"
@@ -310,90 +317,41 @@ func _make_button(text: String, handler: Callable) -> Button:
 
 func _layout_seats() -> void:
 	var view := size
-	if view.x < 10.0 or view.y < 10.0:
+	if view.x < 10.0 or view.y < 10.0 or _seat_panels.is_empty():
 		return
 	var center := view / 2.0
 	var radius := Vector2(view.x * 0.38, view.y * 0.36)
-	for pid in range(NUM_PLAYERS):
-		var panel: PanelContainer = _seat_panels[pid]
-		var angle := PI / 2.0 + TAU * float(pid) / float(NUM_PLAYERS)
+	var n := _seat_panels.size()
+	for i in range(n):
+		var panel: PanelContainer = _seat_panels[i]
+		var angle := PI / 2.0 + TAU * float(i) / float(n)
 		var pos := center + Vector2(cos(angle) * radius.x, sin(angle) * radius.y)
 		panel.position = pos - panel.size / 2.0
 
 
-# --- Refresh ---
-
-func _refresh() -> void:
-	_phase_label.text = game.phase_name()
-	_pot_label.text = "Pot: %d" % game.pot
-
-	_clear_children(_community_box)
-	for card in game.community_cards:
-		_community_box.add_child(_make_card_node(card, true))
-
-	var showdown_reveal: bool = game.hand_over \
-		and game.last_results.get("reason", "") == "showdown"
-
-	for pid in range(NUM_PLAYERS):
-		var seated: bool = pid in game.seats
-		var is_folded: bool = seated and game.folded[pid]
-
-		var tag := ""
-		if seated and pid == game.button:
-			tag += " (D)"
-		if is_folded:
-			tag += " [fold]"
-		_seat_name_labels[pid].text = _player_name(pid) + tag
-		_seat_stack_labels[pid].text = "Stack: %d" % game.player_stacks[pid]
-		_seat_bet_labels[pid].text = "Bet: %d" % (game.player_bets.get(pid, 0) if seated else 0)
-
-		var cards_box: HBoxContainer = _seat_card_boxes[pid]
-		_clear_children(cards_box)
-		if seated and game.hole_cards.has(pid):
-			var face_up: bool = pid == HUMAN_ID or (showdown_reveal and not is_folded)
-			for card in game.hole_cards[pid]:
-				cards_box.add_child(_make_card_node(card, face_up))
-
-		var panel: PanelContainer = _seat_panels[pid]
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.16, 0.16, 0.2)
-		style.set_corner_radius_all(8)
-		style.set_border_width_all(3)
-		if seated and pid == game.current_player and not game.hand_over:
-			style.border_color = Color(1.0, 0.85, 0.2)
-		else:
-			style.border_color = Color(0.3, 0.3, 0.35)
-		panel.add_theme_stylebox_override("panel", style)
-		panel.modulate = Color(1, 1, 1, 0.45) if (is_folded or not seated) else Color.WHITE
-
-	call_deferred("_layout_seats")
-
-
-func _make_card_node(card: Card, face_up: bool) -> Control:
+func _make_card_node(notation: String) -> Control:
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = CARD_SIZE
 	var style := StyleBoxFlat.new()
 	style.set_corner_radius_all(6)
 	style.set_border_width_all(2)
 	style.border_color = Color(0.2, 0.2, 0.2)
-	if face_up:
+	if notation == "??":
+		style.bg_color = Color(0.15, 0.2, 0.5)
+	else:
 		style.bg_color = Color.WHITE
+		var suit_char: String = notation.substr(notation.length() - 1, 1)
+		var rank_part: String = notation.substr(0, notation.length() - 1)
 		var label := Label.new()
-		label.text = "%s%s" % [card.rank_char(), SUIT_SYMBOLS[card.suit]]
+		label.text = "%s%s" % [rank_part, SUIT_SYMBOLS.get(suit_char, "?")]
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		var is_red: bool = card.suit == Card.Suit.HEARTS or card.suit == Card.Suit.DIAMONDS
+		var is_red: bool = suit_char == "h" or suit_char == "d"
 		label.add_theme_color_override("font_color", Color(0.8, 0.1, 0.1) if is_red else Color.BLACK)
 		label.add_theme_font_size_override("font_size", 20)
 		panel.add_child(label)
-	else:
-		style.bg_color = Color(0.15, 0.2, 0.5)
 	panel.add_theme_stylebox_override("panel", style)
 	return panel
-
-
-func _player_name(pid: int) -> String:
-	return "You" if pid == HUMAN_ID else "Bot %d" % pid
 
 
 func _clear_children(node: Node) -> void:

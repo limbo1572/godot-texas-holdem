@@ -199,6 +199,25 @@ func player_action(player_id: int, action: String, amount: int = 0) -> Dictionar
 	return result
 
 
+## Fold a player out of turn (e.g. network disconnect). Safe no-op otherwise.
+func force_fold(pid: int) -> void:
+	if hand_over or pid not in seats or folded[pid]:
+		return
+	folded[pid] = true
+	if _live_count() == 1:
+		_finish_fold_win()
+		return
+	if current_player == pid:
+		if _street_complete():
+			_advance_phase()
+		else:
+			current_player = _next_actor(pid)
+			if current_player == -1:
+				_advance_phase()
+	elif not is_runout_phase and phase != Phase.SHOWDOWN and _street_complete():
+		_advance_phase()
+
+
 ## During a runout (everyone all-in / only one player can act), each call deals
 ## the next street; at the river it resolves the showdown. UI adds pauses between calls.
 func advance_runout() -> void:
