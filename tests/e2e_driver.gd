@@ -11,7 +11,9 @@ var role: String = "host"
 var _snap_serial := 0
 var _done := false
 var _started := false
-var _privacy_checked := false
+var _audited_snapshots := 0
+var _privacy_leaks := 0
+var _sample_printed := false
 
 
 func _ready() -> void:
@@ -52,17 +54,30 @@ func _on_state(snap: Dictionary) -> void:
 		return
 	_snap_serial += 1
 
-	if not _privacy_checked and not snap.hand_over:
-		_privacy_checked = true
-		var leak := false
+	# Audit EVERY pre-showdown snapshot exactly as it arrived over the wire:
+	# opponent cards must be "??" in the payload itself (masked host-side).
+	if not snap.hand_over:
+		_audited_snapshots += 1
 		for entry in snap.players:
-			if entry.seat != snap.your_seat and not entry.cards.is_empty() and entry.cards[0] != "??":
-				leak = true
-		print("E2E_PRIVACY_%s: opponent hole cards %s" % ["FAIL" if leak else "OK", "LEAKED" if leak else "hidden"])
+			if entry.seat == snap.your_seat:
+				continue
+			for card in entry.cards:
+				if card != "??":
+					_privacy_leaks += 1
+					print("E2E_PRIVACY_LEAK: seat %d card '%s' visible in phase %s!" % [entry.seat, card, snap.phase])
+		if not _sample_printed:
+			_sample_printed = true
+			var dump: Array = []
+			for entry in snap.players:
+				dump.append("seat %d cards=%s" % [entry.seat, str(entry.cards)])
+			print("[e2e] wire payload sample (my seat %d): %s" % [snap.your_seat, " | ".join(dump)])
 
 	if snap.hand_over:
 		_done = true
 		print("[e2e] hand finished: reason=%s payouts=%s" % [snap.results.get("reason", "?"), str(snap.results.get("payouts", {}))])
+		print("E2E_PRIVACY_%s: %d pre-showdown snapshots audited, %d leaks" % [
+			"FAIL" if _privacy_leaks > 0 else "OK", _audited_snapshots, _privacy_leaks,
+		])
 		print("E2E_%s_DONE" % role.to_upper())
 		var delay := 1.5 if role == "host" else 0.5
 		await get_tree().create_timer(delay).timeout
