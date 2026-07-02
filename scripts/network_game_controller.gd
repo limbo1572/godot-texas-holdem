@@ -168,7 +168,7 @@ func _bot_act(seat: int) -> void:
 	var action: String = legal[randi() % legal.size()]
 	var amount := 0
 	if action == "raise":
-		var min_raise: int = game.current_bet + maxi(game.last_raise_size, GameState.BIG_BLIND)
+		var min_raise: int = game.current_bet + maxi(game.last_raise_size, game.big_blind)
 		var max_raise: int = game.player_bets[seat] + game.player_stacks[seat]
 		amount = min_raise if max_raise <= min_raise else min_raise + randi() % (max_raise - min_raise + 1)
 	game.player_action(seat, action, amount)
@@ -239,7 +239,7 @@ func _snapshot_for(viewer_seat: int) -> Dictionary:
 		for a in game.get_legal_actions(viewer_seat):
 			legal.append(a)
 		to_call = mini(game.current_bet - game.player_bets[viewer_seat], game.player_stacks[viewer_seat])
-		min_raise = game.current_bet + maxi(game.last_raise_size, GameState.BIG_BLIND)
+		min_raise = game.current_bet + maxi(game.last_raise_size, game.big_blind)
 		max_raise = game.player_bets[viewer_seat] + game.player_stacks[viewer_seat]
 
 	var results_ser: Dictionary = {}
@@ -269,6 +269,10 @@ func _snapshot_for(viewer_seat: int) -> Dictionary:
 	return {
 		"phase": game.phase_name(),
 		"pot": game.pot,
+		"level": game.current_level,
+		"sb": game.small_blind,
+		"bb": game.big_blind,
+		"level_time_remaining": game.level_time_remaining(),
 		"community": community,
 		"current_seat": game.current_player if not game.hand_over else -1,
 		"your_seat": viewer_seat,

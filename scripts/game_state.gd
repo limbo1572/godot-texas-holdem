@@ -31,6 +31,14 @@ var last_results: Dictionary = {}
 var seats: Array[int] = [] ## players dealt into the current hand
 var _acted: Dictionary = {}
 
+## Tournament blinds. The level is derived from real time since the first
+## start_hand() of the session and applied only between hands.
+var small_blind: int = SMALL_BLIND
+var big_blind: int = BIG_BLIND
+var current_level: int = 0
+var time_offset_sec: float = 0.0 ## test/simulation hook: added to real elapsed time
+var _session_start_msec: int = -1
+
 
 func _init(p_num_players: int = 2, p_button: int = 0) -> void:
 	num_players = clampi(p_num_players, 2, 6)
@@ -59,13 +67,21 @@ func start_hand() -> void:
 	if hands_played > 0:
 		_rotate_button()
 
+	## Session clock starts with the first hand and never resets afterwards;
+	## blind level changes take effect only here, between hands.
+	if _session_start_msec < 0:
+		_session_start_msec = Time.get_ticks_msec()
+	current_level = BlindSchedule.level_for_elapsed(session_elapsed_sec())
+	small_blind = BlindSchedule.level(current_level).sb
+	big_blind = BlindSchedule.level(current_level).bb
+
 	phase = Phase.PREHAND
 	hand_over = false
 	is_runout_phase = false
 	last_results = {}
 	pot = 0
 	current_bet = 0
-	last_raise_size = BIG_BLIND
+	last_raise_size = big_blind
 	current_player = -1
 	community_cards.clear()
 	player_bets.clear()
@@ -86,14 +102,26 @@ func start_hand() -> void:
 	for pid in seats:
 		hole_cards[pid] = deck.deal(2)
 
-	_commit_chips(sb_player(), SMALL_BLIND)
-	_commit_chips(bb_player(), BIG_BLIND)
-	current_bet = BIG_BLIND
+	## _commit_chips caps at the stack, so a short stack simply goes all-in on the blind.
+	_commit_chips(sb_player(), small_blind)
+	_commit_chips(bb_player(), big_blind)
+	current_bet = big_blind
 	hands_played += 1
 	phase = Phase.PREFLOP
 	current_player = _next_actor(bb_player())
 	if current_player == -1:
 		_advance_phase()
+
+
+func session_elapsed_sec() -> float:
+	if _session_start_msec < 0:
+		return time_offset_sec
+	return float(Time.get_ticks_msec() - _session_start_msec) / 1000.0 + time_offset_sec
+
+
+## Seconds until the next blind level (-1.0 on the final level).
+func level_time_remaining() -> float:
+	return BlindSchedule.time_remaining(session_elapsed_sec())
 
 
 func sb_player() -> int:
@@ -124,7 +152,7 @@ func get_legal_actions(player_id: int) -> Array[String]:
 		if stack > 0:
 			actions.append("call") ## partial all-in call allowed when stack < to_call
 
-	var min_raise_total: int = current_bet + maxi(last_raise_size, BIG_BLIND)
+	var min_raise_total: int = current_bet + maxi(last_raise_size, big_blind)
 	if stack > to_call and stack + player_bets[player_id] >= min_raise_total:
 		actions.append("raise")
 
@@ -164,7 +192,7 @@ func player_action(player_id: int, action: String, amount: int = 0) -> Dictionar
 			_commit_chips(player_id, to_call)
 			_acted[player_id] = true
 		"raise":
-			var min_raise_total: int = current_bet + maxi(last_raise_size, BIG_BLIND)
+			var min_raise_total: int = current_bet + maxi(last_raise_size, big_blind)
 			if amount < min_raise_total:
 				result.error = "Raise must be at least %d" % min_raise_total
 				return result
@@ -312,7 +340,7 @@ func _street_complete() -> bool:
 
 func _advance_phase() -> void:
 	current_bet = 0
-	last_raise_size = BIG_BLIND
+	last_raise_size = big_blind
 	for pid in seats:
 		player_bets[pid] = 0
 		_acted[pid] = false

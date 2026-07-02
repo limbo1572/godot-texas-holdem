@@ -10,7 +10,7 @@ func _init() -> void:
 	var game := GameState.new(NUM_PLAYERS, randi() % NUM_PLAYERS)
 	game.start_hand()
 	print("Button: P%d | SB: P%d (%d) | BB: P%d (%d)" % [
-		game.button, game.sb_player(), GameState.SMALL_BLIND, game.bb_player(), GameState.BIG_BLIND,
+		game.button, game.sb_player(), game.small_blind, game.bb_player(), game.big_blind,
 	])
 	for pid in game.seats:
 		print("P%d hole: %s | stack: %d" % [pid, _cards_line(game.hole_cards[pid]), game.player_stacks[pid]])
@@ -49,7 +49,7 @@ func _init() -> void:
 
 
 func _random_raise_amount(game: GameState, pid: int) -> int:
-	var min_raise: int = game.current_bet + maxi(game.last_raise_size, GameState.BIG_BLIND)
+	var min_raise: int = game.current_bet + maxi(game.last_raise_size, game.big_blind)
 	var max_raise: int = game.player_bets[pid] + game.player_stacks[pid]
 	if max_raise <= min_raise:
 		return min_raise

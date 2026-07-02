@@ -1,6 +1,8 @@
 # LocalPoker
 
-Texas Hold'em — Godot 4.x. Stage 3: LAN multiplayer (ENet, host-authoritative), 2-6 players, side pots, auto-runout, table UI. Offline mode vs bots included.
+Texas Hold'em — Godot 4.x. LAN multiplayer (ENet, host-authoritative), 2-6 players, side pots, auto-runout, tournament blind schedule, table UI. Offline mode vs bots included.
+
+Blinds follow a hardcoded 10-level tournament schedule (10/20 -> 600/1200, 5 min per level). The level clock starts with the first hand of the session and level changes apply between hands; the host computes the timer, clients only display it.
 
 ## Play
 
@@ -43,6 +45,7 @@ godot --headless --path . --script res://scripts/main.gd
 godot --headless --path . --script res://tests/test_hand_evaluator.gd
 godot --headless --path . --script res://tests/test_network_manager.gd
 godot --headless --path . --script res://tests/test_side_pots.gd
+godot --headless --path . --script res://tests/test_blind_schedule.gd
 ```
 
 Network end-to-end (two real processes over localhost — run host first, then client in a second terminal):

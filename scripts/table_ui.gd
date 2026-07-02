@@ -23,6 +23,15 @@ var _community_box: HBoxContainer
 var _pot_label: Label
 var _phase_label: Label
 var _status_label: Label
+var _level_label: Label
+var _toast_label: Label
+
+## Countdown display: authoritative value comes from host snapshots; between
+## snapshots we only tick the displayed value down locally (presentation only).
+var _level_remaining: float = -1.0
+var _last_level_seen: int = -1
+var _level_line: String = ""
+var _toast_serial: int = 0
 
 var _action_bar: HBoxContainer
 var _fold_btn: Button
@@ -46,7 +55,42 @@ func _ready() -> void:
 func _on_state(snapshot: Dictionary) -> void:
 	_snapshot = snapshot
 	_ensure_seats(snapshot.players.size())
+	_update_blind_info(snapshot)
 	_refresh()
+
+
+func _process(delta: float) -> void:
+	if _level_remaining > 0.0:
+		_level_remaining = maxf(0.0, _level_remaining - delta)
+		_render_level_label()
+
+
+func _update_blind_info(snap: Dictionary) -> void:
+	var level: int = snap.get("level", 0)
+	_level_line = "Level %d — blinds %d/%d" % [level + 1, snap.get("sb", 0), snap.get("bb", 0)]
+	_level_remaining = snap.get("level_time_remaining", -1.0)
+	_render_level_label()
+	if _last_level_seen != -1 and level > _last_level_seen:
+		_show_toast("Blinds increased: %d/%d" % [snap.sb, snap.bb])
+	_last_level_seen = level
+
+
+func _render_level_label() -> void:
+	if _level_remaining >= 0.0:
+		var secs := int(ceil(_level_remaining))
+		_level_label.text = "%s\nNext level in %02d:%02d" % [_level_line, secs / 60, secs % 60]
+	else:
+		_level_label.text = "%s\nFinal level" % _level_line
+
+
+func _show_toast(text: String) -> void:
+	_toast_serial += 1
+	var serial := _toast_serial
+	_toast_label.text = text
+	_toast_label.visible = true
+	await get_tree().create_timer(3.0).timeout
+	if serial == _toast_serial:
+		_toast_label.visible = false
 
 
 # --- Actions ---
@@ -221,6 +265,22 @@ func _build_ui() -> void:
 	_status_label.offset_left = 12.0
 	_status_label.offset_bottom = -8.0
 	add_child(_status_label)
+
+	_level_label = Label.new()
+	_level_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_level_label.offset_left = 12.0
+	_level_label.offset_top = 8.0
+	add_child(_level_label)
+
+	_toast_label = Label.new()
+	_toast_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_toast_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast_label.offset_top = 12.0
+	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast_label.add_theme_font_size_override("font_size", 22)
+	_toast_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
+	_toast_label.visible = false
+	add_child(_toast_label)
 
 	_build_action_bar()
 
